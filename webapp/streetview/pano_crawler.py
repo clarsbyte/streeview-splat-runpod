@@ -7,6 +7,7 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import aiohttp
 from streetlevel import streetview
 
 
@@ -20,17 +21,17 @@ class PanoInfo:
     image_path: str
 
 
-async def _download_pano(pano, output_dir: Path) -> PanoInfo | None:
+async def _download_pano(pano, output_dir: Path, session: aiohttp.ClientSession) -> PanoInfo | None:
     """Download a single panorama image and return its info."""
     try:
         image_path = output_dir / f"{pano.id}.jpg"
-        await streetview.download_panorama(pano, image_path, zoom=3)
+        await streetview.download_panorama_async(pano, str(image_path), session, zoom=3)
         return PanoInfo(
             id=pano.id,
             lat=pano.lat,
-            lng=pano.lng,
-            heading=pano.heading if hasattr(pano, "heading") else 0.0,
-            date=str(pano.date) if hasattr(pano, "date") and pano.date else "",
+            lng=pano.lon,
+            heading=pano.heading if pano.heading is not None else 0.0,
+            date=str(pano.date) if pano.date else "",
             image_path=str(image_path),
         )
     except Exception as e:
@@ -50,36 +51,41 @@ async def crawl_panos(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Find the closest panorama to our starting point
-    start_pano = await streetview.find_panorama_async(lat, lng)
-    if start_pano is None:
-        raise RuntimeError(f"No Street View coverage found near ({lat}, {lng})")
+    async with aiohttp.ClientSession() as session:
+        # Find the closest panorama to our starting point
+        start_pano = await streetview.find_panorama_async(lat, lng, session)
+        if start_pano is None:
+            raise RuntimeError(f"No Street View coverage found near ({lat}, {lng})")
 
-    visited: set[str] = set()
-    queue: list = [start_pano]
-    panos: list[PanoInfo] = []
+        visited: set[str] = set()
+        queue: list = [start_pano]
+        panos: list[PanoInfo] = []
 
-    while queue and len(visited) < max_panos:
-        current = queue.pop(0)
-        if current.id in visited:
-            continue
-        visited.add(current.id)
+        while queue and len(visited) < max_panos:
+            current = queue.pop(0)
+            if current.id in visited:
+                continue
+            visited.add(current.id)
 
-        info = await _download_pano(current, output_dir)
-        if info:
-            panos.append(info)
-            print(f"Downloaded {len(panos)}/{max_panos}: {current.id}")
+            info = await _download_pano(current, output_dir, session)
+            if info:
+                panos.append(info)
+                print(f"Downloaded {len(panos)}/{max_panos}: {current.id}")
 
-        # Enqueue neighbors
-        if hasattr(current, "links") and current.links:
-            for link in current.links:
-                if link.pano_id not in visited:
-                    try:
-                        neighbor = await streetview.find_panorama_by_id_async(link.pano_id)
-                        if neighbor:
-                            queue.append(neighbor)
-                    except Exception:
-                        pass
+            # Enqueue neighbors via links
+            if current.links:
+                for link in current.links:
+                    neighbor_pano = link.pano
+                    if neighbor_pano and neighbor_pano.id not in visited:
+                        try:
+                            # Fetch full metadata for the neighbor
+                            full_neighbor = await streetview.find_panorama_by_id_async(
+                                neighbor_pano.id, session
+                            )
+                            if full_neighbor:
+                                queue.append(full_neighbor)
+                        except Exception:
+                            pass
 
     if len(panos) < 5:
         raise RuntimeError(
