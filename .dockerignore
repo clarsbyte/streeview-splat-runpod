@@ -1,0 +1,8 @@
+sfm_output/
+gsplat_output/
+jobs/
+.git
+__pycache__
+*.mp4
+*.ply
+*.pth

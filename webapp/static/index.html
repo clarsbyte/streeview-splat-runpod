@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video to 3D Gaussian Splat</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Video to 3D Gaussian Splat</h1>
+        <p class="subtitle">Upload a video and generate an interactive 3D scene</p>
+
+        <!-- Upload Section -->
+        <div id="upload-section" class="upload-section">
+            <label for="video-input">
+                <div class="upload-icon">&#128249;</div>
+                <div class="upload-text">Click to select or drag & drop a video file</div>
+                <div id="file-name" class="file-name hidden"></div>
+            </label>
+            <input type="file" id="video-input" accept="video/*" hidden>
+
+            <div class="fps-control">
+                <label for="fps-input">Frames per second:</label>
+                <input type="number" id="fps-input" value="5" min="1" max="60">
+            </div>
+            <br>
+            <button id="start-btn" class="btn btn-primary" disabled>Start Processing</button>
+        </div>
+
+        <!-- Progress Section -->
+        <div id="progress-section" class="progress-section hidden">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <div class="stage-label" id="stage-label">Preparing...</div>
+                <span id="status-badge" class="status-badge running">Running</span>
+            </div>
+            <div class="progress-bar-container">
+                <div id="progress-bar" class="progress-bar"></div>
+            </div>
+            <div id="progress-text" class="progress-text">Starting pipeline...</div>
+            <div id="log-output" class="log-output"></div>
+            <div id="error-message" class="error-message hidden"></div>
+        </div>
+
+        <!-- Viewer Section -->
+        <div id="viewer-section" class="viewer-section hidden">
+            <div class="viewer-header">
+                <h2>3D Gaussian Splat Viewer</h2>
+                <span class="status-badge done">Complete</span>
+            </div>
+            <div class="viewer-canvas-container">
+                <canvas id="splat-canvas"></canvas>
+            </div>
+            <div class="viewer-controls">
+                <a id="download-btn" class="btn btn-secondary" download="point_cloud.ply">Download PLY</a>
+                <button id="new-btn" class="btn btn-primary" onclick="location.reload()">New Video</button>
+            </div>
+            <p class="subtitle" style="margin-top: 1rem;">Click and drag to rotate. Scroll to zoom.</p>
+        </div>
+    </div>
+
+    <script>
+        const uploadSection = document.getElementById('upload-section');
+        const progressSection = document.getElementById('progress-section');
+        const viewerSection = document.getElementById('viewer-section');
+        const videoInput = document.getElementById('video-input');
+        const fileNameEl = document.getElementById('file-name');
+        const fpsInput = document.getElementById('fps-input');
+        const startBtn = document.getElementById('start-btn');
+        const stageLabel = document.getElementById('stage-label');
+        const statusBadge = document.getElementById('status-badge');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const logOutput = document.getElementById('log-output');
+        const errorMessage = document.getElementById('error-message');
+        const downloadBtn = document.getElementById('download-btn');
+
+        let selectedFile = null;
+
+        // File selection
+        videoInput.addEventListener('change', (e) => {
+            selectedFile = e.target.files[0];
+            if (selectedFile) {
+                fileNameEl.textContent = selectedFile.name;
+                fileNameEl.classList.remove('hidden');
+                startBtn.disabled = false;
+            }
+        });
+
+        // Drag and drop
+        uploadSection.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadSection.classList.add('dragover');
+        });
+        uploadSection.addEventListener('dragleave', () => {
+            uploadSection.classList.remove('dragover');
+        });
+        uploadSection.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadSection.classList.remove('dragover');
+            selectedFile = e.dataTransfer.files[0];
+            if (selectedFile) {
+                fileNameEl.textContent = selectedFile.name;
+                fileNameEl.classList.remove('hidden');
+                startBtn.disabled = false;
+            }
+        });
+
+        // Start processing
+        startBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            const formData = new FormData();
+            formData.append('video', selectedFile);
+            formData.append('fps', fpsInput.value);
+
+            startBtn.disabled = true;
+            startBtn.textContent = 'Uploading...';
+
+            try {
+                const res = await fetch('/api/upload', { method: 'POST', body: formData });
+                const data = await res.json();
+
+                if (data.error) {
+                    alert(data.error);
+                    startBtn.disabled = false;
+                    startBtn.textContent = 'Start Processing';
+                    return;
+                }
+
+                uploadSection.classList.add('hidden');
+                progressSection.classList.remove('hidden');
+                connectWebSocket(data.job_id);
+            } catch (err) {
+                alert('Upload failed: ' + err.message);
+                startBtn.disabled = false;
+                startBtn.textContent = 'Start Processing';
+            }
+        });
+
+        const STAGE_NAMES = {
+            'extracting_frames': 'Extracting Frames',
+            'running_colmap': 'Running COLMAP SfM',
+            'training': 'Training Gaussian Splat',
+            'complete': 'Complete',
+        };
+
+        function connectWebSocket(jobId) {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${protocol}//${location.host}/ws/jobs/${jobId}`);
+            let logs = [];
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                stageLabel.textContent = STAGE_NAMES[data.stage] || data.stage;
+                progressBar.style.width = (data.progress * 100) + '%';
+                progressText.textContent = `${Math.round(data.progress * 100)}% - ${data.message}`;
+
+                if (data.message) {
+                    logs.push(data.message);
+                    if (logs.length > 50) logs = logs.slice(-50);
+                    logOutput.textContent = logs.join('\n');
+                    logOutput.scrollTop = logOutput.scrollHeight;
+                }
+
+                if (data.status === 'done') {
+                    ws.close();
+                    showViewer(jobId);
+                } else if (data.status === 'error') {
+                    ws.close();
+                    statusBadge.className = 'status-badge error';
+                    statusBadge.textContent = 'Error';
+                    errorMessage.textContent = data.message;
+                    errorMessage.classList.remove('hidden');
+                }
+            };
+
+            ws.onerror = () => {
+                // Fallback to polling if WebSocket fails
+                pollStatus(jobId);
+            };
+        }
+
+        async function pollStatus(jobId) {
+            const interval = setInterval(async () => {
+                try {
+                    const res = await fetch(`/api/jobs/${jobId}/status`);
+                    const data = await res.json();
+
+                    stageLabel.textContent = STAGE_NAMES[data.stage] || data.stage;
+                    progressBar.style.width = (data.progress * 100) + '%';
+                    progressText.textContent = `${Math.round(data.progress * 100)}% - ${data.message}`;
+
+                    if (data.status === 'done') {
+                        clearInterval(interval);
+                        showViewer(jobId);
+                    } else if (data.status === 'error') {
+                        clearInterval(interval);
+                        statusBadge.className = 'status-badge error';
+                        statusBadge.textContent = 'Error';
+                        errorMessage.textContent = data.message;
+                        errorMessage.classList.remove('hidden');
+                    }
+                } catch (e) { /* retry */ }
+            }, 2000);
+        }
+
+        async function showViewer(jobId) {
+            progressSection.classList.add('hidden');
+            viewerSection.classList.remove('hidden');
+
+            const resultUrl = `/api/jobs/${jobId}/result`;
+            downloadBtn.href = resultUrl;
+
+            try {
+                const res = await fetch(resultUrl);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const plyData = await res.arrayBuffer();
+                console.log('PLY size:', plyData.byteLength);
+                initSplatViewer(plyData);
+            } catch (err) {
+                console.error('Failed to load PLY:', err);
+                document.getElementById('splat-canvas').parentElement.innerHTML =
+                    `<p style="padding:2rem;color:#f87171;">Failed to load model. <a href="${resultUrl}" style="color:#6c63ff;" download>Download PLY</a> and view on <a href="https://antimatter15.com/splat/" style="color:#6c63ff;">antimatter15/splat</a>.</p>`;
+            }
+        }
+
+        function initSplatViewer(plyData) {
+            const canvas = document.getElementById('splat-canvas');
+            const gl = canvas.getContext('webgl2');
+            if (!gl) {
+                canvas.parentElement.innerHTML = '<p style="padding:2rem;color:#aaa;">WebGL2 not supported.</p>';
+                return;
+            }
+
+            const parsed = parsePLY(plyData);
+            if (!parsed || parsed.vertexCount === 0) {
+                canvas.parentElement.innerHTML = '<p style="padding:2rem;color:#aaa;">Could not parse PLY. <a href="' + downloadBtn.href + '" style="color:#6c63ff;">Download</a> and view on <a href="https://antimatter15.com/splat/" style="color:#6c63ff;">antimatter15/splat</a>.</p>';
+                return;
+            }
+            console.log('Parsed vertices:', parsed.vertexCount);
+            renderPointCloud(gl, canvas, parsed);
+        }
+
+        function parsePLY(buffer) {
+            const bytes = new Uint8Array(buffer);
+            const decoder = new TextDecoder();
+
+            // Find "end_header\n"
+            const headerStr = decoder.decode(bytes.slice(0, Math.min(bytes.length, 10000)));
+            const headerEndIdx = headerStr.indexOf('end_header');
+            if (headerEndIdx < 0) return null;
+
+            let headerEnd = headerEndIdx + 10;
+            while (headerEnd < bytes.length && (bytes[headerEnd] === 10 || bytes[headerEnd] === 13)) headerEnd++;
+
+            const headerText = headerStr.slice(0, headerEndIdx);
+            const vertexMatch = headerText.match(/element vertex (\d+)/);
+            if (!vertexMatch) return null;
+
+            const vertexCount = parseInt(vertexMatch[1]);
+            const properties = [];
+            for (const line of headerText.split('\n')) {
+                const m = line.match(/property\s+(\w+)\s+(\w+)/);
+                if (m) properties.push({ type: m[1], name: m[2] });
+            }
+
+            const typeSize = { float: 4, double: 8, uchar: 1, int: 4, uint: 4, short: 2, ushort: 2 };
+            const offsets = [];
+            let off = 0;
+            for (const p of properties) {
+                offsets.push(off);
+                off += typeSize[p.type] || 4;
+            }
+            const stride = off;
+
+            const findProp = (name) => properties.findIndex(p => p.name === name);
+            const xIdx = findProp('x'), yIdx = findProp('y'), zIdx = findProp('z');
+            const dcIdx0 = findProp('f_dc_0'), dcIdx1 = findProp('f_dc_1'), dcIdx2 = findProp('f_dc_2');
+
+            if (xIdx < 0 || yIdx < 0 || zIdx < 0) return null;
+
+            const data = new DataView(buffer, headerEnd);
+            const positions = new Float32Array(vertexCount * 3);
+            const colors = new Float32Array(vertexCount * 3);
+
+            for (let i = 0; i < vertexCount; i++) {
+                const base = i * stride;
+                positions[i*3]   = data.getFloat32(base + offsets[xIdx], true);
+                positions[i*3+1] = data.getFloat32(base + offsets[yIdx], true);
+                positions[i*3+2] = data.getFloat32(base + offsets[zIdx], true);
+
+                if (dcIdx0 >= 0) {
+                    const C0 = 0.28209479177387814;
+                    colors[i*3]   = Math.max(0, Math.min(1, 0.5 + C0 * data.getFloat32(base + offsets[dcIdx0], true)));
+                    colors[i*3+1] = Math.max(0, Math.min(1, 0.5 + C0 * data.getFloat32(base + offsets[dcIdx1], true)));
+                    colors[i*3+2] = Math.max(0, Math.min(1, 0.5 + C0 * data.getFloat32(base + offsets[dcIdx2], true)));
+                } else {
+                    colors[i*3] = colors[i*3+1] = colors[i*3+2] = 0.7;
+                }
+            }
+            return { positions, colors, vertexCount };
+        }
+
+        function renderPointCloud(gl, canvas, { positions, colors, vertexCount }) {
+            function resize() {
+                canvas.width = canvas.clientWidth * devicePixelRatio;
+                canvas.height = canvas.clientHeight * devicePixelRatio;
+                gl.viewport(0, 0, canvas.width, canvas.height);
+            }
+            resize();
+            window.addEventListener('resize', resize);
+
+            const vs = `#version 300 es
+                uniform mat4 uMVP;
+                uniform float uPointSize;
+                in vec3 aPos;
+                in vec3 aColor;
+                out vec3 vColor;
+                void main() {
+                    gl_Position = uMVP * vec4(aPos, 1.0);
+                    gl_PointSize = max(1.0, uPointSize / gl_Position.w);
+                    vColor = aColor;
+                }`;
+            const fs = `#version 300 es
+                precision mediump float;
+                in vec3 vColor;
+                out vec4 fragColor;
+                void main() {
+                    vec2 c = gl_PointCoord - 0.5;
+                    if (dot(c, c) > 0.25) discard;
+                    fragColor = vec4(vColor, 1.0);
+                }`;
+
+            function mkShader(type, src) {
+                const s = gl.createShader(type);
+                gl.shaderSource(s, src);
+                gl.compileShader(s);
+                if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+                    console.error(gl.getShaderInfoLog(s));
+                return s;
+            }
+            const prog = gl.createProgram();
+            gl.attachShader(prog, mkShader(gl.VERTEX_SHADER, vs));
+            gl.attachShader(prog, mkShader(gl.FRAGMENT_SHADER, fs));
+            gl.linkProgram(prog);
+            if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+                console.error(gl.getProgramInfoLog(prog));
+            gl.useProgram(prog);
+
+            const posBuf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+            const aPos = gl.getAttribLocation(prog, 'aPos');
+            gl.enableVertexAttribArray(aPos);
+            gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+
+            const colBuf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, colBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
+            const aColor = gl.getAttribLocation(prog, 'aColor');
+            gl.enableVertexAttribArray(aColor);
+            gl.vertexAttribPointer(aColor, 3, gl.FLOAT, false, 0, 0);
+
+            const uMVP = gl.getUniformLocation(prog, 'uMVP');
+            const uPointSize = gl.getUniformLocation(prog, 'uPointSize');
+
+            gl.enable(gl.DEPTH_TEST);
+            gl.clearColor(0.067, 0.067, 0.067, 1);
+
+            // Bounding box
+            let minX=Infinity, minY=Infinity, minZ=Infinity;
+            let maxX=-Infinity, maxY=-Infinity, maxZ=-Infinity;
+            for (let i = 0; i < vertexCount; i++) {
+                minX=Math.min(minX,positions[i*3]);   maxX=Math.max(maxX,positions[i*3]);
+                minY=Math.min(minY,positions[i*3+1]); maxY=Math.max(maxY,positions[i*3+1]);
+                minZ=Math.min(minZ,positions[i*3+2]); maxZ=Math.max(maxZ,positions[i*3+2]);
+            }
+            const cx=(minX+maxX)/2, cy=(minY+maxY)/2, cz=(minZ+maxZ)/2;
+            const extent = Math.max(maxX-minX, maxY-minY, maxZ-minZ) || 1;
+
+            let rotX=-0.3, rotY=0.5, dist=extent*2;
+            let dragging=false, lastMX=0, lastMY=0;
+
+            canvas.addEventListener('mousedown', e => { dragging=true; lastMX=e.clientX; lastMY=e.clientY; });
+            canvas.addEventListener('mousemove', e => {
+                if (!dragging) return;
+                rotY += (e.clientX-lastMX)*0.01;
+                rotX += (e.clientY-lastMY)*0.01;
+                rotX = Math.max(-1.5, Math.min(1.5, rotX));
+                lastMX=e.clientX; lastMY=e.clientY;
+            });
+            canvas.addEventListener('mouseup', () => dragging=false);
+            canvas.addEventListener('mouseleave', () => dragging=false);
+            canvas.addEventListener('wheel', e => {
+                dist *= 1 + e.deltaY*0.001;
+                dist = Math.max(extent*0.1, Math.min(extent*20, dist));
+                e.preventDefault();
+            }, {passive:false});
+
+            function render() {
+                resize();
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+                const eyeX = cx + dist*Math.cos(rotX)*Math.sin(rotY);
+                const eyeY = cy + dist*Math.sin(rotX);
+                const eyeZ = cz + dist*Math.cos(rotX)*Math.cos(rotY);
+
+                // lookAt
+                let fx=cx-eyeX, fy=cy-eyeY, fz=cz-eyeZ;
+                let fl=Math.sqrt(fx*fx+fy*fy+fz*fz);
+                fx/=fl; fy/=fl; fz/=fl;
+                // up = (0,1,0), right = cross(f, up)
+                let sx=fy*0-fz*1, sy=fz*0-fx*0, sz=fx*1-fy*0;
+                // Nope: up=(0,1,0) => cross(f,up) = (fy*0 - fz*0, fz*0 - fx*0, fx*0 - fy*0) is wrong
+                // cross(f, up) where up=(0,1,0): (f.y*0 - f.z*1, f.z*0 - f.x*0, f.x*1 - f.y*0)
+                // Nah let's just do it properly:
+                // right = cross(forward, up) = (fy*upz - fz*upy, fz*upx - fx*upz, fx*upy - fy*upx)
+                // with up=(0,1,0): right = (-fz, 0, fx)
+                sx=-fz; sy=0; sz=fx;
+                let sl=Math.sqrt(sx*sx+sy*sy+sz*sz);
+                if(sl<1e-6){sx=1;sy=0;sz=0;sl=1;}
+                sx/=sl; sy/=sl; sz/=sl;
+                // true up = cross(right, forward)
+                let ux=sy*fz-sz*fy, uy=sz*fx-sx*fz, uz=sx*fy-sy*fx;
+
+                const view = new Float32Array([
+                    sx, ux, -fx, 0,
+                    sy, uy, -fy, 0,
+                    sz, uz, -fz, 0,
+                    -(sx*eyeX+sy*eyeY+sz*eyeZ),
+                    -(ux*eyeX+uy*eyeY+uz*eyeZ),
+                    (fx*eyeX+fy*eyeY+fz*eyeZ),
+                    1
+                ]);
+
+                const aspect = canvas.width/canvas.height;
+                const f=1/Math.tan(Math.PI/8);
+                const near=extent*0.01, far=extent*100;
+                const proj = new Float32Array([
+                    f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)/(near-far),-1,
+                    0,0,2*far*near/(near-far),0
+                ]);
+
+                // multiply proj * view
+                const mvp = new Float32Array(16);
+                for(let i=0;i<4;i++) for(let j=0;j<4;j++){
+                    let s=0; for(let k=0;k<4;k++) s+=proj[i+k*4]*view[k*4+j];
+                    mvp[i+j*4]=s;
+                }
+
+                gl.uniformMatrix4fv(uMVP, false, mvp);
+                gl.uniform1f(uPointSize, Math.max(3, 800/(dist/extent)));
+                gl.drawArrays(gl.POINTS, 0, vertexCount);
+                requestAnimationFrame(render);
+            }
+            render();
+        }
+    </script>
+</body>
+</html>

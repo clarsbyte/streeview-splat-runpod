@@ -1,0 +1,220 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0a0a0a;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+h1 {
+    font-size: 1.8rem;
+    margin-bottom: 0.5rem;
+    color: #fff;
+}
+
+.subtitle {
+    color: #888;
+    margin-bottom: 2rem;
+}
+
+/* Upload Section */
+.upload-section {
+    background: #1a1a1a;
+    border: 2px dashed #333;
+    border-radius: 12px;
+    padding: 3rem 2rem;
+    text-align: center;
+    transition: border-color 0.2s;
+}
+
+.upload-section.dragover {
+    border-color: #6c63ff;
+    background: #1e1a2e;
+}
+
+.upload-section label {
+    display: block;
+    cursor: pointer;
+    margin-bottom: 1.5rem;
+}
+
+.upload-icon {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+}
+
+.upload-text {
+    font-size: 1.1rem;
+    color: #aaa;
+}
+
+.file-name {
+    color: #6c63ff;
+    font-weight: 600;
+    margin: 0.5rem 0;
+}
+
+.fps-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 1rem 0;
+    color: #aaa;
+}
+
+.fps-control input {
+    width: 70px;
+    padding: 0.4rem 0.6rem;
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #fff;
+    font-size: 1rem;
+    text-align: center;
+}
+
+.btn {
+    padding: 0.75rem 2rem;
+    font-size: 1rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.btn-primary {
+    background: #6c63ff;
+    color: #fff;
+}
+
+.btn-primary:hover {
+    background: #5a52e0;
+}
+
+.btn-primary:disabled {
+    background: #333;
+    cursor: not-allowed;
+}
+
+.btn-secondary {
+    background: #2a2a2a;
+    color: #ccc;
+    border: 1px solid #444;
+}
+
+.btn-secondary:hover {
+    background: #333;
+}
+
+/* Progress Section */
+.progress-section {
+    background: #1a1a1a;
+    border-radius: 12px;
+    padding: 2rem;
+}
+
+.stage-label {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    color: #fff;
+}
+
+.progress-bar-container {
+    background: #2a2a2a;
+    border-radius: 8px;
+    height: 12px;
+    overflow: hidden;
+    margin-bottom: 1rem;
+}
+
+.progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #6c63ff, #9b59b6);
+    border-radius: 8px;
+    transition: width 0.3s ease;
+    width: 0%;
+}
+
+.progress-text {
+    color: #888;
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+}
+
+.log-output {
+    background: #111;
+    border-radius: 8px;
+    padding: 1rem;
+    font-family: 'Fira Code', 'Courier New', monospace;
+    font-size: 0.85rem;
+    color: #aaa;
+    max-height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+/* Viewer Section */
+.viewer-section {
+    text-align: center;
+}
+
+.viewer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.viewer-canvas-container {
+    background: #111;
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+    width: 100%;
+    height: 500px;
+}
+
+.viewer-canvas-container canvas {
+    width: 100%;
+    height: 100%;
+}
+
+.viewer-controls {
+    margin-top: 1rem;
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.status-badge.running { background: #1a3a2a; color: #4ade80; }
+.status-badge.done { background: #1a2a3a; color: #60a5fa; }
+.status-badge.error { background: #3a1a1a; color: #f87171; }
+
+.hidden { display: none; }
+
+.error-message {
+    background: #2a1515;
+    border: 1px solid #5a2020;
+    border-radius: 8px;
+    padding: 1rem;
+    color: #f87171;
+    margin-top: 1rem;
+}

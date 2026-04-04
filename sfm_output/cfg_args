@@ -1,0 +1,1 @@
+Namespace(sh_degree=3, source_path='/home/clarissa/Documents/hackathon/video-3d-reconstruction-gsplat/sfm_output/undistorted', model_path='./sfm_output', images='images', resolution=1024, white_background=False, data_device='cuda', eval=True)
