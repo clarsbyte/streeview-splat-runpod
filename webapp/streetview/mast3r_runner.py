@@ -121,13 +121,15 @@ def run_mast3r(
     ).to(device)
 
     print(f"Loading {len(image_paths)} images...")
-    images = load_images(image_paths, size=224)
+    images = load_images(image_paths, size=512)
 
-    # Build pairs using spatial strategy
-    pair_indices = _build_spatial_pairs(image_metadata)
-
-    # Convert to the format MASt3R expects
-    pairs = [(images[i], images[j]) for i, j in pair_indices]
+    # Use dust3r's built-in pair maker with sliding window to ensure all images are covered
+    from dust3r.utils.misc import make_pairs
+    n = len(images)
+    # swin-N creates a sliding window of size N — each image paired with N neighbors
+    # This guarantees every image appears in at least one pair
+    winsize = min(3, n - 1)  # small window to keep pairs manageable
+    pairs = make_pairs(images, scene_graph=f"swin-{winsize}", prefilter=None, symmetrize=True)
 
     print(f"Running inference on {len(pairs)} pairs...")
     output = inference(pairs, model, device, batch_size=1)
