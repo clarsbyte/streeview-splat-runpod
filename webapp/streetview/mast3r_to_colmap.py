@@ -139,18 +139,30 @@ def convert_to_colmap(
     with open(mast3r_output_dir / "image_names.json") as f:
         image_names = json.load(f)
 
-    # Get camera dimensions from metadata or intrinsics
+    # Use original image dimensions from metadata, but scale MASt3R intrinsics
+    # to match. MASt3R estimates intrinsics at 512px; poses are consistent with
+    # those intrinsics. We need to scale intrinsics to the actual image size.
     if image_metadata_path and image_metadata_path.exists():
         with open(image_metadata_path) as f:
             meta = json.load(f)
         width = meta[0]["width"]
         height = meta[0]["height"]
-        fx = meta[0]["fx"]
-        fy = meta[0]["fy"]
-        cx = meta[0]["cx"]
-        cy = meta[0]["cy"]
+
+        # MASt3R intrinsics are for its internal resolution
+        K = intrinsics[0]
+        mast3r_cx, mast3r_cy = K[0, 2], K[1, 2]
+        mast3r_w = mast3r_cx * 2
+        mast3r_h = mast3r_cy * 2
+
+        # Scale intrinsics from MASt3R resolution to actual image resolution
+        scale_x = width / mast3r_w
+        scale_y = height / mast3r_h
+        fx = K[0, 0] * scale_x
+        fy = K[1, 1] * scale_y
+        cx = K[0, 2] * scale_x
+        cy = K[1, 2] * scale_y
     else:
-        # Derive from MASt3R intrinsics (first camera)
+        # No metadata — use MASt3R intrinsics directly
         K = intrinsics[0]
         fx, fy = K[0, 0], K[1, 1]
         cx, cy = K[0, 2], K[1, 2]
@@ -173,8 +185,8 @@ def convert_to_colmap(
     # Write COLMAP binary files
     write_cameras_bin(sparse_dir / "cameras.bin", width, height, fx, fy, cx, cy)
     write_images_bin(sparse_dir / "images.bin", [poses[i] for i in range(len(poses))], image_names)
-    write_points3d_bin(sparse_dir / "points3D.bin", points3d, colors)
-    write_points3d_ply(sparse_dir / "points3D.ply", points3d, colors)
+    write_points3d_bin(sparse_dir / "points3D.bin", points3d, colors, max_points=200000)
+    write_points3d_ply(sparse_dir / "points3D.ply", points3d, colors, max_points=200000)
 
     print(f"COLMAP conversion complete: {len(image_names)} images, {len(points3d)} points")
     print(f"Output: {output_dir}")

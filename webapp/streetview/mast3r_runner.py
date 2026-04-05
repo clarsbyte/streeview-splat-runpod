@@ -123,21 +123,66 @@ def run_mast3r(
     print(f"Loading {len(image_paths)} images...")
     images = load_images(image_paths, size=512)
 
-    # Build pairs using sliding window — every image paired with its neighbors
-    # This guarantees every image index appears in at least one pair
+    # Build pairs using spatial awareness:
+    # 1. Intra-pano: pair adjacent headings within same pano (high overlap)
+    # 2. Cross-pano: pair same-heading views between adjacent panos (good stereo baseline)
+    # 3. Fallback: ensure every image appears in at least one pair
     n = len(images)
-    winsize = min(3, n - 1)
+
+    # Group images by pano
+    pano_groups: dict[str, list[int]] = {}
+    for i, meta in enumerate(image_metadata):
+        pano_groups.setdefault(meta["pano_id"], []).append(i)
+
     pair_indices = set()
+
+    # Intra-pano: pair all views within same pano (they share the same viewpoint)
+    for indices in pano_groups.values():
+        for a_idx in range(len(indices)):
+            for b_idx in range(a_idx + 1, len(indices)):
+                pair_indices.add((indices[a_idx], indices[b_idx]))
+
+    # Cross-pano: same heading between consecutive panos
+    pano_ids = list(pano_groups.keys())
+    for k in range(len(pano_ids) - 1):
+        pid_a, pid_b = pano_ids[k], pano_ids[k + 1]
+        headings_a = {image_metadata[i]["heading"]: i for i in pano_groups[pid_a]}
+        headings_b = {image_metadata[i]["heading"]: i for i in pano_groups[pid_b]}
+        for h in headings_a:
+            if h in headings_b:
+                pair_indices.add((min(headings_a[h], headings_b[h]),
+                                  max(headings_a[h], headings_b[h])))
+            # Also pair with neighboring headings (±1 step) for more cross-pano links
+            for h2 in headings_b:
+                hdiff = abs(h - h2)
+                hdiff = min(hdiff, 360 - hdiff)
+                if hdiff <= 90:  # within 90 degrees
+                    pair_indices.add((min(headings_a[h], headings_b[h2]),
+                                      max(headings_a[h], headings_b[h2])))
+
+    # Ensure every image index appears in at least one pair
+    covered = set()
+    for a, b in pair_indices:
+        covered.add(a)
+        covered.add(b)
     for i in range(n):
-        for j in range(i + 1, min(i + winsize + 1, n)):
-            pair_indices.add((i, j))
+        if i not in covered:
+            j = max(0, i - 1) if i > 0 else min(1, n - 1)
+            pair_indices.add((min(i, j), max(i, j)))
+
+    # Cap to avoid OOM (keep spatial structure by not shuffling)
+    pairs_list = sorted(pair_indices)
+    if len(pairs_list) > 120:
+        # Prioritize intra-pano and same-heading cross-pano pairs
+        pairs_list = pairs_list[:120]
+
     # Symmetrize: add both (i,j) and (j,i) as MASt3R is asymmetric
     pairs = []
-    for i, j in pair_indices:
+    for i, j in pairs_list:
         pairs.append((images[i], images[j]))
         pairs.append((images[j], images[i]))
 
-    print(f"Running inference on {len(pairs)} pairs ({n} images, window={winsize})...")
+    print(f"Running inference on {len(pairs)} pairs ({n} images, {len(pairs_list)} unique)...")
     output = inference(pairs, model, device, batch_size=1)
 
     print("Running global alignment...")
@@ -161,15 +206,21 @@ def run_mast3r(
 
     try:
         scene.preset_pose(known_poses)
-        scene.compute_global_alignment(init="known_poses", niter=300)
+        scene.compute_global_alignment(init="known_poses", niter=500)
     except Exception as e:
         print(f"Warning: known_poses init failed ({e}), falling back to MST init")
-        scene.compute_global_alignment(init="mst", niter=300)
+        scene.compute_global_alignment(init="mst", niter=500)
 
     # Extract results
     poses_tensor = scene.get_im_poses().detach().cpu().numpy()  # (N, 4, 4)
     pts3d_list = scene.get_pts3d()  # list of (H, W, 3) tensors
     intrinsics_tensor = scene.get_intrinsics().detach().cpu().numpy()  # (N, 3, 3)
+
+    # Get confidence scores if available
+    try:
+        confidence_masks = scene.get_masks()
+    except Exception:
+        confidence_masks = None
 
     # Collect dense point cloud with colors
     all_pts = []
@@ -189,8 +240,14 @@ def run_mast3r(
             img = (img * 255).astype(np.uint8)
         colors = img.reshape(-1, 3)
 
-        # Filter out invalid points (near zero or very far)
+        # Filter out invalid points
         valid = np.isfinite(pts_np).all(axis=1) & (np.linalg.norm(pts_np, axis=1) < 1000)
+
+        # Apply confidence mask if available
+        if confidence_masks is not None:
+            mask = confidence_masks[i].detach().cpu().numpy().reshape(-1)
+            valid = valid & mask.astype(bool)
+
         all_pts.append(pts_np[valid])
         all_colors.append(colors[valid])
 

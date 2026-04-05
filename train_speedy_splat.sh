@@ -30,15 +30,17 @@ echo "Running Speedy Splat training..."
 python3 speedy-splat/train.py \
     --source_path "$SFM_INPUT_DIR" \
     --model_path "$GSPLAT_OUTPUT_DIR" \
-    --resolution 512 \
-    --iterations 7000 \
-    --position_lr_init 0.002 \
-    --position_lr_final 0.0002 \
-    --feature_lr 0.0005 \
-    --scaling_lr 0.0005 \
-    --rotation_lr 0.0005 \
-    --percent_dense 0.8 \
-    --lambda_dssim 0.5 \
-    --densification_interval 500 \
-    --opacity_reset_interval 30000 \
-    --save_iterations 7000
+    --resolution 1024 \
+    --iterations 30000 \
+    --position_lr_init 0.00016 \
+    --position_lr_final 0.0000016 \
+    --feature_lr 0.0025 \
+    --scaling_lr 0.005 \
+    --rotation_lr 0.001 \
+    --percent_dense 0.01 \
+    --lambda_dssim 0.2 \
+    --densification_interval 100 \
+    --densify_until_iter 15000 \
+    --opacity_reset_interval 3000 \
+    --densify_grad_threshold 0.0002 \
+    --save_iterations 7000 30000
