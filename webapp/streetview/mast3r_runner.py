@@ -136,11 +136,12 @@ def run_mast3r(
 
     pair_indices = set()
 
-    # Intra-pano: pair all views within same pano (they share the same viewpoint)
+    # Intra-pano: only adjacent views (circular) to keep pair count manageable
     for indices in pano_groups.values():
         for a_idx in range(len(indices)):
-            for b_idx in range(a_idx + 1, len(indices)):
-                pair_indices.add((indices[a_idx], indices[b_idx]))
+            b_idx = (a_idx + 1) % len(indices)
+            a, b = min(indices[a_idx], indices[b_idx]), max(indices[a_idx], indices[b_idx])
+            pair_indices.add((a, b))
 
     # Cross-pano: same heading between consecutive panos
     pano_ids = list(pano_groups.keys())
@@ -152,37 +153,33 @@ def run_mast3r(
             if h in headings_b:
                 pair_indices.add((min(headings_a[h], headings_b[h]),
                                   max(headings_a[h], headings_b[h])))
-            # Also pair with neighboring headings (±1 step) for more cross-pano links
-            for h2 in headings_b:
-                hdiff = abs(h - h2)
-                hdiff = min(hdiff, 360 - hdiff)
-                if hdiff <= 90:  # within 90 degrees
-                    pair_indices.add((min(headings_a[h], headings_b[h2]),
-                                      max(headings_a[h], headings_b[h2])))
 
-    # Ensure every image index appears in at least one pair
-    covered = set()
-    for a, b in pair_indices:
-        covered.add(a)
-        covered.add(b)
-    for i in range(n):
-        if i not in covered:
-            j = max(0, i - 1) if i > 0 else min(1, n - 1)
-            pair_indices.add((min(i, j), max(i, j)))
+    # Ensure every image index appears in at least one pair (MUST happen after any cap)
+    def ensure_coverage(pairs_set, total):
+        covered = set()
+        for a, b in pairs_set:
+            covered.add(a)
+            covered.add(b)
+        for i in range(total):
+            if i not in covered:
+                j = (i - 1) if i > 0 else 1
+                j = min(j, total - 1)
+                pairs_set.add((min(i, j), max(i, j)))
+                covered.add(i)
+                covered.add(j)
+        return pairs_set
 
-    # Cap to avoid OOM (keep spatial structure by not shuffling)
-    pairs_list = sorted(pair_indices)
-    if len(pairs_list) > 120:
-        # Prioritize intra-pano and same-heading cross-pano pairs
-        pairs_list = pairs_list[:120]
+    pair_indices = ensure_coverage(pair_indices, n)
+
+    print(f"Built {len(pair_indices)} unique pairs from {n} images ({len(pano_groups)} panos)")
 
     # Symmetrize: add both (i,j) and (j,i) as MASt3R is asymmetric
     pairs = []
-    for i, j in pairs_list:
+    for i, j in sorted(pair_indices):
         pairs.append((images[i], images[j]))
         pairs.append((images[j], images[i]))
 
-    print(f"Running inference on {len(pairs)} pairs ({n} images, {len(pairs_list)} unique)...")
+    print(f"Running inference on {len(pairs)} pairs (symmetrized)...")
     output = inference(pairs, model, device, batch_size=1)
 
     print("Running global alignment...")
