@@ -5,7 +5,7 @@
 - **Template:** `runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04`
 - **GPU:** L40S (recommended) or A40
 - **Disk:** 50GB+ container volume
-- **Expose ports:** 8000 (API), 8888 (Jupyter)
+- **Expose ports:** 8888 (API — shares Jupyter port)
 
 ## 2. Setup (run once)
 
@@ -45,10 +45,10 @@ ulimit -n 65536
 cd /app
 export PYTHONPATH="/app/mast3r:/app/mast3r/dust3r:$PYTHONPATH"
 ulimit -n 65536
-python3 -m uvicorn webapp.app:app --host 0.0.0.0 --port 8000
+python3 -m uvicorn webapp.app:app --host 0.0.0.0 --port 8888
 ```
 
-The API is now live at `https://<pod-id>-8000.proxy.runpod.net/`.
+The API is now live at `https://<pod-id>-8888.proxy.runpod.net/`.
 
 ## 4. API Endpoints
 
@@ -56,32 +56,32 @@ The API is now live at `https://<pod-id>-8000.proxy.runpod.net/`.
 
 ```bash
 # Upload video
-curl -X POST https://<pod-url>/api/upload \
+curl -X POST https://<pod-id>-8888.proxy.runpod.net/api/upload \
   -F "video=@walkthrough.mp4" \
   -F "fps=2"
 # Returns: {"job_id": "abc123"}
 
 # Poll status
-curl https://<pod-url>/api/jobs/abc123/status
+curl https://<pod-id>-8888.proxy.runpod.net/api/jobs/abc123/status
 
 # Download result PLY
-curl -o model.ply https://<pod-url>/api/jobs/abc123/result
+curl -o model.ply https://<pod-id>-8888.proxy.runpod.net/api/jobs/abc123/result
 ```
 
 ### Street View → Splat
 
 ```bash
 # Start job
-curl -X POST https://<pod-url>/api/streetview \
+curl -X POST https://<pod-id>-8888.proxy.runpod.net/api/streetview \
   -H "Content-Type: application/json" \
   -d '{"lat": 37.7749, "lng": -122.4194, "max_panos": 10, "num_views": 6}'
 # Returns: {"job_id": "def456"}
 
 # Poll status (same endpoint)
-curl https://<pod-url>/api/jobs/def456/status
+curl https://<pod-id>-8888.proxy.runpod.net/api/jobs/def456/status
 
 # Download result PLY (same endpoint)
-curl -o model.ply https://<pod-url>/api/jobs/def456/result
+curl -o model.ply https://<pod-id>-8888.proxy.runpod.net/api/jobs/def456/result
 ```
 
 ## 5. Update code
@@ -97,5 +97,5 @@ git pull origin main
 Set in your straightline `.env.local`:
 
 ```
-RUNPOD_URL=https://<pod-id>-8000.proxy.runpod.net
+RUNPOD_URL=https://<pod-id>-8888.proxy.runpod.net
 ```
