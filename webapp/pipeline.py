@@ -40,7 +40,7 @@ def get_video_path(job_id: str) -> Path:
 def get_result_path(job_id: str) -> Optional[Path]:
     job_dir = PROJECT_ROOT / "jobs" / job_id
     # Check multiple possible locations
-    for iterations in ["iteration_30000", "iteration_10000", "iteration_7000", "iteration_3000", "iteration_2000"]:
+    for iterations in ["iteration_80000", "iteration_30000", "iteration_10000", "iteration_7000", "iteration_3000", "iteration_2000"]:
         p = job_dir / "gsplat_output" / "point_cloud" / iterations / "point_cloud.ply"
         if p.exists():
             return p
