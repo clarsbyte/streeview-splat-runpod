@@ -26,9 +26,9 @@ def run_colmap(image_path: str, output_dir: str, use_gpu: bool = True):
         camera_mode=pycolmap.CameraMode.SINGLE,
     )
 
-    # Step 2: Feature matching (GPU) — exhaustive is faster for small sets
+    # Step 2: Feature matching (GPU) — sequential for video (much faster than exhaustive)
     print("STAGE: feature_matching", flush=True)
-    pycolmap.match_exhaustive(
+    pycolmap.match_sequential(
         database_path=str(database_path),
         device=device,
     )
