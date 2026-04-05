@@ -125,104 +125,102 @@ async def run_pipeline(job_id: str):
             frames = sorted((sfm_dir / "images").glob("frame_*.jpg"))
         await broadcast(job_id, {"progress": 0.1, "message": f"Using {len(frames)} frames [{elapsed_str()}]"})
 
-        # Stage 2: COLMAP SfM (GPU-accelerated via pycolmap)
-        await broadcast(job_id, {"stage": "running_colmap", "progress": 0.15, "message": "Running COLMAP Structure-from-Motion (GPU)..."})
+        # Stage 2: MASt3R pose estimation (GPU — much faster than COLMAP)
+        await broadcast(job_id, {"stage": "running_mast3r", "progress": 0.15, "message": "Running MASt3R 3D reconstruction (GPU)..."})
+
+        # Create image metadata for video frames (no GPS, just sequential)
+        image_dir = sfm_dir / "images"
+        frame_files = sorted(image_dir.glob("frame_*.jpg"))
+
+        # Write minimal metadata for mast3r_runner (no GPS for video)
+        import json as _json
+        video_metadata = []
+        for i, f in enumerate(frame_files):
+            video_metadata.append({
+                "filename": f.name,
+                "pano_id": "video",
+                "lat": 0.0,
+                "lng": 0.0,
+                "heading": 0.0,
+                "width": 1024,
+                "height": 768,
+                "fx": 512.0, "fy": 512.0,
+                "cx": 512.0, "cy": 384.0,
+            })
+        meta_path = sfm_dir / "image_metadata.json"
+        meta_path.write_text(_json.dumps(video_metadata))
+
+        mast3r_out = job_dir / "mast3r_output"
+        mast3r_out.mkdir(parents=True, exist_ok=True)
 
         proc = await asyncio.create_subprocess_exec(
-            "python3", str(PROJECT_ROOT / "webapp" / "colmap_runner.py"),
-            str(sfm_dir / "images"), str(sfm_dir),
+            "python3", "-m", "webapp.streetview.mast3r_runner",
+            "--image_dir", str(image_dir),
+            "--metadata", str(meta_path),
+            "--output", str(mast3r_out),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(PROJECT_ROOT),
+            env={**os.environ, "PYTHONPATH": "/app/mast3r:/app/mast3r/dust3r:" + os.environ.get("PYTHONPATH", "")},
         )
 
-        async def parse_colmap():
+        async def parse_mast3r():
             while True:
                 line = await proc.stdout.readline()
                 if not line:
                     break
                 text = line.decode("utf-8", errors="replace").strip()
-                if "feature_extraction" in text:
-                    await broadcast(job_id, {"progress": 0.2, "message": f"Feature extraction (GPU)... [{elapsed_str()}]"})
-                elif "feature_matching" in text:
-                    await broadcast(job_id, {"progress": 0.25, "message": f"Feature matching (GPU)... [{elapsed_str()}]"})
-                elif "sparse_reconstruction" in text:
-                    await broadcast(job_id, {"progress": 0.3, "message": f"Sparse reconstruction... [{elapsed_str()}]"})
-                elif "undistortion" in text:
-                    await broadcast(job_id, {"progress": 0.35, "message": f"Undistorting images... [{elapsed_str()}]"})
+                if "Loading MASt3R" in text:
+                    await broadcast(job_id, {"progress": 0.17, "message": f"Loading MASt3R model... [{elapsed_str()}]"})
+                elif "Loading" in text and "images" in text:
+                    await broadcast(job_id, {"progress": 0.20, "message": f"Loading images... [{elapsed_str()}]"})
+                elif "Running inference" in text:
+                    await broadcast(job_id, {"progress": 0.25, "message": f"Running pairwise inference (GPU)... [{elapsed_str()}]"})
+                elif "Running global alignment" in text:
+                    await broadcast(job_id, {"progress": 0.30, "message": f"Optimizing 3D alignment... [{elapsed_str()}]"})
+                elif "MASt3R complete" in text:
+                    await broadcast(job_id, {"progress": 0.35, "message": f"MASt3R reconstruction done [{elapsed_str()}]"})
 
-        await parse_colmap()
+        await parse_mast3r()
         await proc.wait()
         if proc.returncode != 0:
             stderr = await proc.stderr.read()
-            await broadcast(job_id, {"status": "error", "message": f"COLMAP failed: {stderr.decode()[-500:]}"})
+            await broadcast(job_id, {"status": "error", "message": f"MASt3R failed: {stderr.decode()[-500:]}"})
             return
 
-        await broadcast(job_id, {"progress": 0.4, "message": f"COLMAP complete [{elapsed_str()}]"})
+        # Stage 2b: Convert MASt3R output to COLMAP format
+        await broadcast(job_id, {"stage": "converting", "progress": 0.35, "message": f"Converting to training format... [{elapsed_str()}]"})
 
-        # Check if COLMAP produced enough data
-        undist_images = list((sfm_dir / "undistorted" / "images").glob("*")) if (sfm_dir / "undistorted" / "images").exists() else []
-        if len(undist_images) < 5:
-            await broadcast(job_id, {"status": "error", "message": f"COLMAP only reconstructed {len(undist_images)} views — not enough for training. Try a different video with more distinct features, slower camera movement, or higher FPS."})
+        undistorted_dir = sfm_dir / "undistorted"
+        proc = await asyncio.create_subprocess_exec(
+            "python3", "-m", "webapp.streetview.mast3r_to_colmap",
+            "--mast3r_output", str(mast3r_out),
+            "--image_dir", str(image_dir),
+            "--output", str(undistorted_dir),
+            "--image_metadata", str(meta_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(PROJECT_ROOT),
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            await broadcast(job_id, {"status": "error", "message": f"COLMAP conversion failed: {stderr.decode()[-500:]}"})
             return
 
-        # Check point cloud size
-        points_bin = sfm_dir / "undistorted" / "sparse" / "0" / "points3D.bin"
-        min_points = 50
-        if points_bin.exists() and points_bin.stat().st_size < 1000:
-            await broadcast(job_id, {"status": "error", "message": f"COLMAP reconstructed too few 3D points. The video may lack texture or have too little camera movement. Try a different video."})
-            return
+        await broadcast(job_id, {"progress": 0.4, "message": f"Reconstruction complete [{elapsed_str()}]"})
 
         # Stage 3: Gaussian Splat Training
-        train_start_time = time.time()
         await broadcast(job_id, {"stage": "training", "progress": 0.4, "message": "Starting Gaussian Splat training..."})
 
         proc = await asyncio.create_subprocess_exec(
             str(PROJECT_ROOT / "train_speedy_splat.sh"),
-            str(sfm_dir / "undistorted"), str(gsplat_dir),
+            str(undistorted_dir), str(gsplat_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(PROJECT_ROOT),
         )
 
-        # Parse tqdm progress from stderr (tqdm uses \r, so read in chunks)
-        async def parse_training():
-            buf = b""
-            while True:
-                chunk = await proc.stderr.read(4096)
-                if not chunk:
-                    break
-                buf += chunk
-                # Split on \r or \n to get tqdm lines
-                parts = re.split(rb"[\r\n]+", buf)
-                buf = parts[-1]  # keep incomplete last part
-                for part in parts[:-1]:
-                    text = part.decode("utf-8", errors="replace").strip()
-                    if not text:
-                        continue
-                    match = re.search(r"(\d+)/(\d+).*Loss[=:](\S+)", text)
-                    if not match:
-                        continue
-                    current = int(match.group(1))
-                    total = int(match.group(2))
-                    loss = match.group(3).rstrip("]")
-                    train_progress = current / total
-                    overall = 0.4 + train_progress * 0.55
-                    train_elapsed = time.time() - train_start_time
-                    train_pct = current / total
-                    if train_pct > 0:
-                        train_remaining = int(train_elapsed / train_pct - train_elapsed)
-                        mins, secs = divmod(train_remaining, 60)
-                        eta = f"~{mins}m {secs}s remaining"
-                    else:
-                        eta = ""
-                    te_mins, te_secs = divmod(int(train_elapsed), 60)
-                    await broadcast(job_id, {
-                        "progress": overall,
-                        "message": f"Training: {current}/{total} iterations, Loss: {loss} [{te_mins}m {te_secs}s] {eta}"
-                    })
-
-        await parse_training()
+        await _parse_training_progress(proc, job_id, start_time, progress_base=0.4, progress_range=0.55)
         await proc.wait()
         if proc.returncode != 0:
             stdout = await proc.stdout.read()

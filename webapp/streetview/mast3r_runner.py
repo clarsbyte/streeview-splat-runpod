@@ -123,55 +123,55 @@ def run_mast3r(
     print(f"Loading {len(image_paths)} images...")
     images = load_images(image_paths, size=512)
 
-    # Build pairs using spatial awareness:
-    # 1. Intra-pano: pair adjacent headings within same pano (high overlap)
-    # 2. Cross-pano: pair same-heading views between adjacent panos (good stereo baseline)
-    # 3. Fallback: ensure every image appears in at least one pair
     n = len(images)
 
-    # Group images by pano
+    # Detect if this is video (single pano_id) or street view (multiple panos)
     pano_groups: dict[str, list[int]] = {}
     for i, meta in enumerate(image_metadata):
         pano_groups.setdefault(meta["pano_id"], []).append(i)
 
+    is_video = len(pano_groups) == 1
+
     pair_indices = set()
 
-    # Intra-pano: only adjacent views (circular) to keep pair count manageable
-    for indices in pano_groups.values():
-        for a_idx in range(len(indices)):
-            b_idx = (a_idx + 1) % len(indices)
-            a, b = min(indices[a_idx], indices[b_idx]), max(indices[a_idx], indices[b_idx])
-            pair_indices.add((a, b))
+    if is_video:
+        # Video: sequential sliding window — each frame with its neighbors
+        winsize = min(3, n - 1)
+        for i in range(n):
+            for j in range(i + 1, min(i + winsize + 1, n)):
+                pair_indices.add((i, j))
+    else:
+        # Street View: spatial pairs
+        # Intra-pano: only adjacent views (circular)
+        for indices in pano_groups.values():
+            for a_idx in range(len(indices)):
+                b_idx = (a_idx + 1) % len(indices)
+                a, b = min(indices[a_idx], indices[b_idx]), max(indices[a_idx], indices[b_idx])
+                pair_indices.add((a, b))
 
-    # Cross-pano: same heading between consecutive panos
-    pano_ids = list(pano_groups.keys())
-    for k in range(len(pano_ids) - 1):
-        pid_a, pid_b = pano_ids[k], pano_ids[k + 1]
-        headings_a = {image_metadata[i]["heading"]: i for i in pano_groups[pid_a]}
-        headings_b = {image_metadata[i]["heading"]: i for i in pano_groups[pid_b]}
-        for h in headings_a:
-            if h in headings_b:
-                pair_indices.add((min(headings_a[h], headings_b[h]),
-                                  max(headings_a[h], headings_b[h])))
+        # Cross-pano: same heading between consecutive panos
+        pano_ids = list(pano_groups.keys())
+        for k in range(len(pano_ids) - 1):
+            pid_a, pid_b = pano_ids[k], pano_ids[k + 1]
+            headings_a = {image_metadata[i]["heading"]: i for i in pano_groups[pid_a]}
+            headings_b = {image_metadata[i]["heading"]: i for i in pano_groups[pid_b]}
+            for h in headings_a:
+                if h in headings_b:
+                    pair_indices.add((min(headings_a[h], headings_b[h]),
+                                      max(headings_a[h], headings_b[h])))
 
-    # Ensure every image index appears in at least one pair (MUST happen after any cap)
-    def ensure_coverage(pairs_set, total):
-        covered = set()
-        for a, b in pairs_set:
-            covered.add(a)
-            covered.add(b)
-        for i in range(total):
-            if i not in covered:
-                j = (i - 1) if i > 0 else 1
-                j = min(j, total - 1)
-                pairs_set.add((min(i, j), max(i, j)))
-                covered.add(i)
-                covered.add(j)
-        return pairs_set
+    # Ensure every image index appears in at least one pair
+    covered = set()
+    for a, b in pair_indices:
+        covered.add(a)
+        covered.add(b)
+    for i in range(n):
+        if i not in covered:
+            j = (i - 1) if i > 0 else 1
+            j = min(j, n - 1)
+            pair_indices.add((min(i, j), max(i, j)))
 
-    pair_indices = ensure_coverage(pair_indices, n)
-
-    print(f"Built {len(pair_indices)} unique pairs from {n} images ({len(pano_groups)} panos)")
+    print(f"Built {len(pair_indices)} unique pairs from {n} images ({'video' if is_video else f'{len(pano_groups)} panos'})")
 
     # Symmetrize: add both (i,j) and (j,i) as MASt3R is asymmetric
     pairs = []
@@ -188,24 +188,30 @@ def run_mast3r(
         mode=GlobalAlignerMode.ModularPointCloudOptimizer,
     )
 
-    # Set GPS priors as initial pose estimates
-    origin_lat = image_metadata[0]["lat"]
-    origin_lng = image_metadata[0]["lng"]
+    # Set GPS priors for street view, or use MST init for video
+    has_gps = not is_video and any(m["lat"] != 0 or m["lng"] != 0 for m in image_metadata)
 
-    known_poses = []
-    for meta in image_metadata:
-        east, north, up = _gps_to_enu(meta["lat"], meta["lng"], origin_lat, origin_lng)
-        R = _heading_to_rotation(meta["heading"])
-        pose = np.eye(4)
-        pose[:3, :3] = R
-        pose[:3, 3] = [east, up, north]  # ENU -> OpenGL convention (Y-up)
-        known_poses.append(torch.from_numpy(pose).float().to(device))
+    if has_gps:
+        origin_lat = image_metadata[0]["lat"]
+        origin_lng = image_metadata[0]["lng"]
 
-    try:
-        scene.preset_pose(known_poses)
-        scene.compute_global_alignment(init="known_poses", niter=500)
-    except Exception as e:
-        print(f"Warning: known_poses init failed ({e}), falling back to MST init")
+        known_poses = []
+        for meta in image_metadata:
+            east, north, up = _gps_to_enu(meta["lat"], meta["lng"], origin_lat, origin_lng)
+            R = _heading_to_rotation(meta["heading"])
+            pose = np.eye(4)
+            pose[:3, :3] = R
+            pose[:3, 3] = [east, up, north]  # ENU -> OpenGL convention (Y-up)
+            known_poses.append(torch.from_numpy(pose).float().to(device))
+
+        try:
+            scene.preset_pose(known_poses)
+            scene.compute_global_alignment(init="known_poses", niter=500)
+        except Exception as e:
+            print(f"Warning: known_poses init failed ({e}), falling back to MST init")
+            scene.compute_global_alignment(init="mst", niter=500)
+    else:
+        print("No GPS priors — using MST initialization")
         scene.compute_global_alignment(init="mst", niter=500)
 
     # Extract results
