@@ -123,15 +123,21 @@ def run_mast3r(
     print(f"Loading {len(image_paths)} images...")
     images = load_images(image_paths, size=512)
 
-    # Use dust3r's built-in pair maker with sliding window to ensure all images are covered
-    from dust3r.utils.misc import make_pairs
+    # Build pairs using sliding window — every image paired with its neighbors
+    # This guarantees every image index appears in at least one pair
     n = len(images)
-    # swin-N creates a sliding window of size N — each image paired with N neighbors
-    # This guarantees every image appears in at least one pair
-    winsize = min(3, n - 1)  # small window to keep pairs manageable
-    pairs = make_pairs(images, scene_graph=f"swin-{winsize}", prefilter=None, symmetrize=True)
+    winsize = min(3, n - 1)
+    pair_indices = set()
+    for i in range(n):
+        for j in range(i + 1, min(i + winsize + 1, n)):
+            pair_indices.add((i, j))
+    # Symmetrize: add both (i,j) and (j,i) as MASt3R is asymmetric
+    pairs = []
+    for i, j in pair_indices:
+        pairs.append((images[i], images[j]))
+        pairs.append((images[j], images[i]))
 
-    print(f"Running inference on {len(pairs)} pairs...")
+    print(f"Running inference on {len(pairs)} pairs ({n} images, window={winsize})...")
     output = inference(pairs, model, device, batch_size=1)
 
     print("Running global alignment...")
