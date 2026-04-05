@@ -40,57 +40,49 @@ def _heading_to_rotation(heading_deg: float) -> np.ndarray:
     ])
 
 
-def _build_spatial_pairs(image_metadata: list[dict], max_pairs_per_image: int = 12) -> list[tuple[int, int]]:
-    """Build image pairs using spatial proximity and viewing direction.
+def _build_spatial_pairs(image_metadata: list[dict]) -> list[tuple[int, int]]:
+    """Build minimal image pairs to keep MASt3R fast and within memory.
 
     Strategy:
-    - Same-pano views are paired (they share the same viewpoint)
-    - Cross-pano views are paired if within 15m and headings within 90 degrees
+    - Same-pano: only pair neighboring views (adjacent headings)
+    - Cross-pano: only pair views with the SAME heading from adjacent panos
+    - Cap total pairs to avoid OOM
     """
     n = len(image_metadata)
 
-    # Group images by pano
     pano_groups: dict[str, list[int]] = {}
     for i, meta in enumerate(image_metadata):
-        pano_id = meta["pano_id"]
-        pano_groups.setdefault(pano_id, []).append(i)
+        pano_groups.setdefault(meta["pano_id"], []).append(i)
 
     pairs = set()
 
-    # Intra-pano pairs: pair adjacent views within the same panorama
+    # Intra-pano: only adjacent views (e.g. h000-h090, h090-h180, etc.)
     for indices in pano_groups.values():
         for i in range(len(indices)):
-            for j in range(i + 1, min(i + 4, len(indices))):
-                pairs.add((indices[i], indices[j]))
+            j = (i + 1) % len(indices)
+            a, b = min(indices[i], indices[j]), max(indices[i], indices[j])
+            pairs.add((a, b))
 
-    # Cross-pano pairs: pair views from nearby panos with similar headings
+    # Cross-pano: same heading only, between consecutive panos
     pano_ids = list(pano_groups.keys())
-    pano_centers = {}
-    for pid in pano_ids:
-        idx = pano_groups[pid][0]
-        meta = image_metadata[idx]
-        pano_centers[pid] = (meta["lat"], meta["lng"])
+    for k in range(len(pano_ids) - 1):
+        pid_a, pid_b = pano_ids[k], pano_ids[k + 1]
+        headings_a = {image_metadata[i]["heading"]: i for i in pano_groups[pid_a]}
+        headings_b = {image_metadata[i]["heading"]: i for i in pano_groups[pid_b]}
+        for h in headings_a:
+            if h in headings_b:
+                a, b = min(headings_a[h], headings_b[h]), max(headings_a[h], headings_b[h])
+                pairs.add((a, b))
 
-    origin_lat = image_metadata[0]["lat"]
-    origin_lng = image_metadata[0]["lng"]
+    # Hard cap
+    pairs_list = list(pairs)
+    if len(pairs_list) > 80:
+        import random
+        random.shuffle(pairs_list)
+        pairs_list = pairs_list[:80]
 
-    for a_idx, pid_a in enumerate(pano_ids):
-        ea, na, _ = _gps_to_enu(pano_centers[pid_a][0], pano_centers[pid_a][1], origin_lat, origin_lng)
-        for pid_b in pano_ids[a_idx + 1:]:
-            eb, nb, _ = _gps_to_enu(pano_centers[pid_b][0], pano_centers[pid_b][1], origin_lat, origin_lng)
-            dist = math.sqrt((ea - eb) ** 2 + (na - nb) ** 2)
-            if dist > 15.0:
-                continue
-            # Pair views with similar headings
-            for i in pano_groups[pid_a]:
-                for j in pano_groups[pid_b]:
-                    h_diff = abs(image_metadata[i]["heading"] - image_metadata[j]["heading"])
-                    h_diff = min(h_diff, 360 - h_diff)
-                    if h_diff < 90:
-                        pairs.add((min(i, j), max(i, j)))
-
-    print(f"Built {len(pairs)} image pairs from {n} images")
-    return list(pairs)
+    print(f"Built {len(pairs_list)} image pairs from {n} images")
+    return pairs_list
 
 
 def run_mast3r(
@@ -129,7 +121,7 @@ def run_mast3r(
     ).to(device)
 
     print(f"Loading {len(image_paths)} images...")
-    images = load_images(image_paths, size=512)
+    images = load_images(image_paths, size=224)
 
     # Build pairs using spatial strategy
     pair_indices = _build_spatial_pairs(image_metadata)
